@@ -53,7 +53,7 @@ public class Program
                              GatewayIntents.MessageContent |
                              GatewayIntents.DirectMessages,
 
-            // Permite que o bot lide com Interações (Slash Commands)
+            // Permite que o bot lide com Interações (Slash Commands) 
             AlwaysDownloadUsers = true
         };
         services.AddSingleton(new DiscordSocketClient(discordConfig));
