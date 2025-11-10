@@ -1,6 +1,5 @@
 ﻿using Discord;
 using Discord.WebSocket;
-using PipBot3000;
 
 public class CommandHandler
 {
@@ -38,7 +37,6 @@ public class CommandHandler
         // --- Roteamento de DM ---
         if (message.Channel is IDMChannel)
         {
-            // Roteia para o fluxo de PJ ou para o novo fluxo de criação do GM.
             await _characterService.HandleDmCreationStepAsync(message);
             return;
         }
@@ -62,7 +60,7 @@ public class CommandHandler
         {
             await _gameService.HandleCraftCommandAsync(message, guildId, userId);
         }
-        else if (message.Content.StartsWith("!xp")) // Comando XP
+        else if (message.Content.StartsWith("!xp"))
         {
             await _gameService.HandleXPCommandAsync(message, guildId);
         }
@@ -124,12 +122,11 @@ public class CommandHandler
         {
             if (interaction is SocketSlashCommand slashCommand)
             {
+                // Defer (Aguarde...) é necessário para comandos que podem demorar (consultas ao DB)
+                await slashCommand.DeferAsync();
                 await HandleSlashCommandAsync(slashCommand);
             }
         }
-
-        // Confirma que a interação foi recebida para evitar o erro "A Aplicação não Responde"
-        await interaction.RespondAsync();
     }
 
     private async Task HandleSlashCommandAsync(SocketSlashCommand command)
@@ -138,7 +135,81 @@ public class CommandHandler
         ulong userId = command.User.Id;
 
         // Este switch roteia os novos Slash Commands
+        switch (command.CommandName)
+        {
+            case "teste":
+                await HandleSlashTest(command, guildId, userId);
+                break;
+            case "npc":
+                await HandleSlashNpc(command);
+                break;
+            case "regra":
+                await HandleSlashRegra(command);
+                break;
+            case "area":
+                await HandleSlashArea(command);
+                break;
+        }
+    }
 
+    // --- NOVOS MÉTODOS DE LÓGICA PARA SLASH COMMANDS ---
 
+    private async Task HandleSlashTest(SocketSlashCommand command, ulong guildId, ulong userId)
+    {
+        // 1. Extrair opções
+        var options = command.Data.Options;
+        string skillName = (string)options.First(o => o.Name == "pericia").Value;
+        int difficulty = (int)(long)options.First(o => o.Name == "dificuldade").Value;
+        bool useLuck = options.FirstOrDefault(o => o.Name == "sorte")?.Value as bool? ?? false;
+        int diceToBuy = (int)(options.FirstOrDefault(o => o.Name == "dados")?.Value as long? ?? 0);
+        string username = (command.User as SocketGuildUser)?.Nickname ?? command.User.Username;
+
+        // 2. Chamar o serviço refatorado
+        var result = await _gameService.GetTestResultEmbedAsync(guildId, userId, username, skillName.ToLower(), difficulty, useLuck, diceToBuy, 0);
+
+        // 3. Enviar a resposta
+        if (result.Embed == null)
+        {
+            await command.FollowupAsync(result.ErrorMessage);
+        }
+        else
+        {
+            var sentMessage = await command.FollowupAsync(embed: result.Embed);
+            // 4. Salvar no cache (se a rolagem foi bem-sucedida)
+            if (result.RollCache != null)
+            {
+                result.RollCache.OriginalMessage = sentMessage;
+                // Pedimos ao GameService para salvar o cache para nós:
+                _gameService.CacheLastRoll(userId, result.RollCache);
+            }
+        }
+    }
+
+    private async Task HandleSlashNpc(SocketSlashCommand command)
+    {
+        string query = (string)command.Data.Options.First(o => o.Name == "nome").Value;
+        var embed = await _infoService.GetNPCEmbedAsync(query);
+
+        if (embed == null)
+        {
+            await command.FollowupAsync($"Criatura/NPC não encontrado para: `{query}`.");
+        }
+        else
+        {
+            await command.FollowupAsync(embed: embed);
+        }
+    }
+
+    private async Task HandleSlashRegra(SocketSlashCommand command)
+    {
+        string query = (string)command.Data.Options.First(o => o.Name == "termo").Value;
+        var embed = await _infoService.GetRuleEmbedAsync(query);
+        await command.FollowupAsync(embed: embed);
+    }
+
+    private async Task HandleSlashArea(SocketSlashCommand command)
+    {
+        var embed = _infoService.GetAreaRollEmbed();
+        await command.FollowupAsync(embed: embed);
     }
 }

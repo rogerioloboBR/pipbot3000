@@ -20,9 +20,13 @@ public class InfoService
         string[] parts = message.Content.Split(' ');
         string location = parts.Length > 1 ? parts[1].ToLower() : "aleatorio";
 
-        string locationKey = location;
-        string locationName = "";
+        var embed = await GetInjuryEmbedAsync(location);
+        await message.Channel.SendMessageAsync(embed: embed);
+    }
 
+    public async Task<Embed> GetInjuryEmbedAsync(string locationKey)
+    {
+        string locationName = "";
         if (locationKey == "aleatorio")
         {
             int roll = _random.Next(1, 21);
@@ -41,19 +45,18 @@ public class InfoService
         if (title == null)
         {
             title = "Local Desconhecido";
-            text = "Use: `!ferimento cabeca`, `!ferimento tronco`, `!ferimento braco`, `!ferimento perna` ou `!ferimento aleatorio`.";
+            text = "Use: `cabeca`, `tronco`, `braco`, `perna` ou `aleatorio`.";
             page = 0;
         }
 
-        var embed = new EmbedBuilder()
+        return new EmbedBuilder()
             .WithTitle($"🩸 Ferimento: {locationName}{title}")
             .WithDescription(text)
             .WithColor(Color.DarkRed)
             .WithFooter(page > 0 ? $"Fonte: Livro de Regras, pág. {page}" : " ")
             .Build();
-
-        await message.Channel.SendMessageAsync(embed: embed);
     }
+
 
     // ### LÓGICA DO !regra ###
     public async Task HandleRuleQueryCommandAsync(SocketMessage message)
@@ -64,9 +67,14 @@ public class InfoService
             await message.Channel.SendMessageAsync("Formato inválido. Use: `!regra [termo]`");
             return;
         }
-
         string query = string.Join(" ", parts.Skip(1)).ToLower();
 
+        var embed = await GetRuleEmbedAsync(query);
+        await message.Channel.SendMessageAsync(embed: embed);
+    }
+
+    public async Task<Embed> GetRuleEmbedAsync(string query)
+    {
         var (title, text, page) = await _dbService.GetRuleAsync(query);
 
         if (title == null)
@@ -76,20 +84,18 @@ public class InfoService
             page = 0;
         }
 
-        var embed = new EmbedBuilder()
+        return new EmbedBuilder()
             .WithTitle($"📖 Regra: {title}")
             .WithDescription(text)
             .WithColor(Color.LightGrey)
             .WithFooter(page > 0 ? $"Fonte: Livro de Regras, pág. {page}" : " ")
             .Build();
-
-        await message.Channel.SendMessageAsync(embed: embed);
     }
 
     // ### LÓGICA DO !item ###
     public async Task HandleItemQueryAsync(SocketMessage message)
     {
-        string query = message.Content.Substring(message.Content.IndexOf(' ') + 1).Trim();
+        string query = message.Content.Substring(message.Content.IndexOf(' ') + 1).Trim().Replace("\"", ""); // Corrigido
 
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -97,34 +103,45 @@ public class InfoService
             return;
         }
 
+        var embed = await GetItemEmbedAsync(query);
+        if (embed == null)
+        {
+            await message.Channel.SendMessageAsync($"Item não encontrado para: `{query}`. (Nota: Mods de itens são buscados com `!mod`)");
+        }
+        else
+        {
+            await message.Channel.SendMessageAsync(embed: embed);
+        }
+    }
+
+    public async Task<Embed?> GetItemEmbedAsync(string query)
+    {
         var weapon = await _dbService.GetWeaponAsync(query);
         if (weapon != null)
         {
-            await message.Channel.SendMessageAsync(embed: BuildWeaponEmbed(weapon));
-            return;
+            return BuildWeaponEmbed(weapon);
         }
 
         var armor = await _dbService.GetArmorAsync(query);
         if (armor != null)
         {
-            await message.Channel.SendMessageAsync(embed: BuildArmorEmbed(armor));
-            return;
+            return BuildArmorEmbed(armor);
         }
 
         var consumable = await _dbService.GetConsumableAsync(query);
         if (consumable != null)
         {
-            await message.Channel.SendMessageAsync(embed: BuildConsumableEmbed(consumable));
-            return;
+            return BuildConsumableEmbed(consumable);
         }
 
-        await message.Channel.SendMessageAsync($"Item não encontrado para: `{query}`. (Nota: Mods de itens são buscados com `!mod`)");
+        return null; // Nenhum item encontrado
     }
+
 
     // ### LÓGICA DO !mod ###
     public async Task HandleModQueryAsync(SocketMessage message)
     {
-        string query = message.Content.Substring(message.Content.IndexOf(' ') + 1).Trim();
+        string query = message.Content.Substring(message.Content.IndexOf(' ') + 1).Trim().Replace("\"", "");
 
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -132,17 +149,29 @@ public class InfoService
             return;
         }
 
+        var embed = await GetModEmbedAsync(query);
+        if (embed == null)
+        {
+            await message.Channel.SendMessageAsync($"Modificação não encontrada para: `{query}`.");
+        }
+        else
+        {
+            await message.Channel.SendMessageAsync(embed: embed);
+        }
+    }
+
+    public async Task<Embed?> GetModEmbedAsync(string query)
+    {
         var mod = await _dbService.GetModAsync(query);
         if (mod != null)
         {
-            await message.Channel.SendMessageAsync(embed: BuildModEmbed(mod));
-            return;
+            return BuildModEmbed(mod);
         }
-
-        await message.Channel.SendMessageAsync($"Modificação não encontrada para: `{query}`.");
+        return null;
     }
 
     // ### LÓGICA DO !vasculhar / !loot ###
+    // (Este já está bem estruturado, não precisa de um método de embed separado)
     public async Task HandleLootCommandAsync(SocketMessage message)
     {
         string[] parts = message.Content.Split(' ');
@@ -213,7 +242,7 @@ public class InfoService
     // ### LÓGICA DO !npc (NOVO MÉTODO) ###
     public async Task HandleNPCQueryAsync(SocketMessage message)
     {
-        string query = message.Content.Substring(message.Content.IndexOf(' ') + 1).Trim();
+        string query = message.Content.Substring(message.Content.IndexOf(' ') + 1).Trim().Replace("\"", "");
 
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -221,14 +250,25 @@ public class InfoService
             return;
         }
 
+        var embed = await GetNPCEmbedAsync(query);
+        if (embed == null)
+        {
+            await message.Channel.SendMessageAsync($"Criatura/NPC não encontrada para: `{query}`.");
+        }
+        else
+        {
+            await message.Channel.SendMessageAsync(embed: embed);
+        }
+    }
+
+    public async Task<Embed?> GetNPCEmbedAsync(string query)
+    {
         var stats = await _dbService.GetCreatureStatsAsync(query);
         if (stats == null)
         {
-            await message.Channel.SendMessageAsync($"Criatura/NPC não encontrado para: `{query}`.");
-            return;
+            return null;
         }
-
-        await message.Channel.SendMessageAsync(embed: BuildNPCEmbed(stats));
+        return BuildNPCEmbed(stats);
     }
 
 
@@ -305,9 +345,9 @@ public class InfoService
     }
 
 
-    // --- Métodos Auxiliares de Embed ---
+    // --- Métodos Auxiliares de Embed (TORNADOS PÚBLICOS) ---
 
-    private Embed BuildWeaponEmbed(Weapon weapon)
+    public Embed BuildWeaponEmbed(Weapon weapon)
     {
         var embed = new EmbedBuilder()
             .WithTitle($"🔫 Arma: {weapon.Nome}")
@@ -327,7 +367,7 @@ public class InfoService
         return embed.Build();
     }
 
-    private Embed BuildArmorEmbed(Armor armor)
+    public Embed BuildArmorEmbed(Armor armor)
     {
         var embed = new EmbedBuilder()
             .WithTitle($"🛡️ Armadura: {armor.Nome}")
@@ -351,7 +391,7 @@ public class InfoService
         return embed.Build();
     }
 
-    private Embed BuildConsumableEmbed(Consumable consumable)
+    public Embed BuildConsumableEmbed(Consumable consumable)
     {
         var embed = new EmbedBuilder()
             .WithTitle($"💊 Consumível: {consumable.Nome}")
@@ -367,7 +407,7 @@ public class InfoService
         return embed.Build();
     }
 
-    private Embed BuildModEmbed(Mod mod)
+    public Embed BuildModEmbed(Mod mod)
     {
         var embed = new EmbedBuilder()
             .WithTitle($"🔧 Mod: {mod.Nome}")
@@ -393,7 +433,7 @@ public class InfoService
         return embed.Build();
     }
 
-    private Embed BuildNPCEmbed(CreatureNPCStats stats)
+    public Embed BuildNPCEmbed(CreatureNPCStats stats)
     {
         Color color = stats.Tipo switch
         {
@@ -403,9 +443,16 @@ public class InfoService
             _ => Color.DarkRed
         };
 
-        string attributes = stats.Tipo.Contains("Normal") ?
-            $"FOR (Corpo): {stats.FOR_Val} | INT (Mente): {stats.INT_Val}" :
-            $"FOR: {stats.FOR_Val} | PER: {stats.PER_Val} | RES: {stats.RES_Val}\nCAR: {stats.CAR_Val} | INT: {stats.INT_Val} | AGI: {stats.AGI_Val} | SOR: {stats.SOR_Val}";
+        // CORREÇÃO DO BUG DE FORMATAÇÃO (Invasor)
+        bool isPersonagem = stats.PalavrasChave.Contains("Humano") ||
+                            stats.PalavrasChave.Contains("Necrótico") ||
+                            stats.PalavrasChave.Contains("Supermutante") ||
+                            !stats.Tipo.Contains("Normal");
+
+        string attributes = isPersonagem ?
+            $"FOR: {stats.FOR_Val} | PER: {stats.PER_Val} | RES: {stats.RES_Val}\nCAR: {stats.CAR_Val} | INT: {stats.INT_Val} | AGI: {stats.AGI_Val} | SOR: {stats.SOR_Val}" :
+            $"FOR (Corpo): {stats.FOR_Val} | INT (Mente): {stats.INT_Val}";
+
 
         string rds = $"Físico: {stats.RD_Fisico_Base} | Energético: {stats.RD_Energetico_Base}\nRadiativo: {stats.RD_Radiativo_Base} | Venenoso: {stats.RD_Venenoso_Base}";
 
@@ -423,10 +470,14 @@ public class InfoService
 
         return embed.Build();
     }
-    /// <summary>
-    /// Rola 1d20 para determinar a área de acerto no combate, conforme a pág. 28.
-    /// </summary>
+
     public async Task HandleAreaRollCommandAsync(SocketMessage message)
+    {
+        var embed = GetAreaRollEmbed();
+        await message.Channel.SendMessageAsync(embed: embed);
+    }
+
+    public Embed GetAreaRollEmbed()
     {
         int roll = _random.Next(1, 21);
         string area = "";
@@ -464,32 +515,23 @@ public class InfoService
             emoji = "🦵";
         }
 
-        var embed = new EmbedBuilder()
+        return new EmbedBuilder()
             .WithTitle($"🎯 Rolagem de Área de Acerto (1d20)")
             .WithDescription($"O ataque acertou a área:\n\n# {emoji} **{area}**")
             .AddField("Rolagem", $"` {roll} `", true)
-            .AddField("Faixa", $"1-{roll}", true)
             .WithColor(Color.Orange)
             .WithFooter("Fonte: Livro de Regras, Tabela de Áreas de Acerto (pág. 28)")
             .Build();
-
-        await message.Channel.SendMessageAsync(embed: embed);
     }
-    /// <summary>
-    /// Fornece um resumo de ferramentas e dados críticos do GM (XP, NPC, PA, etc.).
-    /// </summary>
+
     public async Task HandleGMToolkitCommandAsync(SocketMessage message, ulong guildId)
     {
-        // 1. Obter status de PA
         int currentPA = await _dbService.GetActionPointsAsync(guildId);
-
-        // 2. Obter lista de personagens e seus níveis/XP para a gestão de XP
         var characters = await _dbService.GetAllCharactersInGuildAsync(guildId);
 
         var xpSummary = new StringBuilder();
         if (characters.Any())
         {
-            // Limita a exibição para que o embed não fique muito grande
             foreach (var c in characters.Take(5))
             {
                 xpSummary.AppendLine($"`{c.Name}`: Nvl {c.Level} ({c.XP} XP)");

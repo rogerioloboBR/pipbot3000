@@ -1,5 +1,4 @@
 ﻿using MySqlConnector;
-using PipBot3000;
 
 // Assumindo que os modelos de dados (Weapon, Armor, Consumable, Mod, LootItem, Recipe, CreatureNPCStats, GMContentCreationState) 
 // estão disponíveis no namespace global ou via 'using' no seu projeto.
@@ -354,6 +353,11 @@ public class DatabaseService
                 var updateCommand = new MySqlCommand("UPDATE Personagens SET CurrentXP = @newXP, CurrentLevel = @newLevel WHERE GuildId = @guildId AND UserID = @userId", connection);
                 updateCommand.Parameters.AddWithValue("@newXP", newXP);
                 updateCommand.Parameters.AddWithValue("@newLevel", newLevel);
+
+                // ADICIONE ESTAS DUAS LINHAS:
+                updateCommand.Parameters.AddWithValue("@guildId", guildId);
+                updateCommand.Parameters.AddWithValue("@userId", userId);
+
                 await updateCommand.ExecuteNonQueryAsync();
 
                 return (newXP, newLevel, GetRequiredXPForNextLevel(newLevel) - newXP);

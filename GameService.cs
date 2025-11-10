@@ -19,14 +19,12 @@ public class GameService
 
     #region Handlers de Comandos de Jogo
 
+    // O Handler principal (para !teste) agora é um 'wrapper'
     public async Task HandleTestCommandAsync(SocketUserMessage message, ulong guildId, ulong userId)
     {
         string content = message.Content;
         bool useLuck = false;
         int diceToBuy = 0;
-        int costInAP = 0;
-        string apSpendMessage = "";
-        string luckSpendMessage = "";
 
         // 1. EXTRAIR FLAGS
         if (content.Contains("--sorte"))
@@ -39,31 +37,64 @@ public class GameService
         if (diceMatch.Success)
         {
             diceToBuy = int.Parse(diceMatch.Groups[1].Value);
-            if (diceToBuy < 1 || diceToBuy > 3) { await message.Channel.SendMessageAsync("Erro: Você só pode comprar de 1 a 3 dados extras."); return; }
-            costInAP = diceToBuy switch { 1 => 1, 2 => 3, 3 => 6, _ => 0 };
             content = Regex.Replace(content, diceRegex, "").Trim();
         }
 
         // 2. EXTRAIR ARGUMENTOS PRINCIPAIS
         string[] parts = content.Split(' ');
-        if (parts.Length < 3 || !int.TryParse(parts[2], out int difficulty)) { await message.Channel.SendMessageAsync("Formato inválido. Use: `!teste [pericia] [dificuldade]`\nOpcionais: `--sorte` (custa 1 PS) ou `--dados [1-3]` (custa PAs do grupo)."); return; }
+        if (parts.Length < 3 || !int.TryParse(parts[2], out int difficulty))
+        {
+            await message.Channel.SendMessageAsync("Formato inválido. Use: `!teste [pericia] [dificuldade]`\nOpcionais: `--sorte` (custa 1 PS) ou `--dados [1-3]` (custa PAs do grupo).");
+            return;
+        }
         string skillName = parts[1].ToLower();
 
-        // 3. BUSCAR DADOS DO BANCO (Personagem)
-        if (!_rulebook.SkillToAttribute.TryGetValue(skillName, out string attributeName)) { await message.Channel.SendMessageAsync($"Perícia `{skillName}` desconhecida."); return; }
+        // 3. CHAMAR O MÉTODO DE LÓGICA REUTILIZÁVEL
+        var result = await GetTestResultEmbedAsync(guildId, userId, message.Author.Username, skillName, difficulty, useLuck, diceToBuy, 0);
+
+        // 4. TRATAR O RESULTADO
+        if (result.Embed == null)
+        {
+            await message.Channel.SendMessageAsync(result.ErrorMessage);
+            return;
+        }
+
+        var sentMessage = await message.Channel.SendMessageAsync(embed: result.Embed);
+
+        // 5. Salvar a rolagem no cache para !rerrolar
+        if (result.RollCache != null)
+        {
+            result.RollCache.OriginalMessage = sentMessage;
+            _lastRollCache[userId] = result.RollCache;
+        }
+    }
+
+    // NOVO MÉTODO REUTILIZÁVEL (para !teste e /teste)
+    public async Task<(Embed? Embed, string? ErrorMessage, UserLastRoll? RollCache)> GetTestResultEmbedAsync(
+        ulong guildId, ulong userId, string username, string skillName, int difficulty, bool useLuck, int diceToBuy, int rerollCount)
+    {
+        int costInAP = 0;
+        string apSpendMessage = "";
+        string luckSpendMessage = "";
+
+        if (diceToBuy < 0 || diceToBuy > 3) { return (null, "Erro: Você só pode comprar de 1 a 3 dados extras.", null); }
+        costInAP = diceToBuy switch { 1 => 1, 2 => 3, 3 => 6, _ => 0 };
+
+        if (!_rulebook.SkillToAttribute.TryGetValue(skillName, out string attributeName)) { return (null, $"Perícia `{skillName}` desconhecida.", null); }
+
         var characterStats = await _dbService.GetCharacterAsync(guildId, userId);
-        if (characterStats == null) { await message.Channel.SendMessageAsync("Você não tem um personagem registrado. Use `!registrar` ou `!criar-personagem` primeiro."); return; }
+        if (characterStats == null) { return (null, "Você não tem um personagem registrado. Use `!registrar` ou `!criar-personagem` primeiro.", null); }
+
         var skillInfo = await _dbService.GetCharacterSkillAsync(guildId, userId, skillName);
         int skillRank = skillInfo.Rank;
         bool isTagSkill = skillInfo.IsTag;
         string attributeUsed = attributeName.ToUpper();
         int attributeValue;
 
-        // 4. PROCESSAR GASTOS DE SORTE E PA
         if (useLuck)
         {
             var (success, remainingPS) = await _dbService.SpendLuckPointsAsync(guildId, userId, 1);
-            if (!success) { await message.Channel.SendMessageAsync($"❌ Você tentou usar 'Cartas Marcadas', mas não tem Pontos de Sorte! Você tem {remainingPS} PS."); return; }
+            if (!success) { return (null, $"❌ Você tentou usar 'Cartas Marcadas', mas não tem Pontos de Sorte! Você tem {remainingPS} PS.", null); }
             attributeValue = characterStats!["SOR"];
             attributeUsed = $"SOR (Cartas Marcadas)";
             luckSpendMessage = $"⚡ 1 PS gasto! Restam {remainingPS}.";
@@ -72,32 +103,26 @@ public class GameService
         {
             attributeValue = characterStats![attributeName.ToUpper()];
         }
+
         int numDice = 2;
         if (diceToBuy > 0)
         {
             var (success, remainingAP) = await _dbService.SpendActionPointsAsync(guildId, costInAP);
-            if (!success) { await message.Channel.SendMessageAsync($"❌ Você tentou comprar {diceToBuy}d20 (custo {costInAP} PA), mas o grupo só tem {remainingAP} PA!"); return; }
+            if (!success) { return (null, $"❌ Você tentou comprar {diceToBuy}d20 (custo {costInAP} PA), mas o grupo só tem {remainingAP} PA!", null); }
             numDice += diceToBuy;
             apSpendMessage = $"💸 {costInAP} PA gastos! Restam {remainingAP} PA no grupo.";
         }
+
         int targetNumber = attributeValue + skillRank;
         int tagSkillRank = isTagSkill ? skillRank : 0;
 
-        // 5. ROLAR OS DADOS
         List<int> rolls = new List<int>();
         for (int i = 0; i < numDice; i++) { rolls.Add(_random.Next(1, 21)); }
 
-        // 6. MONTAR A RESPOSTA
-        var embed = await BuildTestResultEmbed(
-            guildId, message.Author.Username, skillName, attributeUsed, attributeValue, skillRank, difficulty,
-            isTagSkill, targetNumber, tagSkillRank, rolls, luckSpendMessage, apSpendMessage, 0);
+        var embed = await BuildTestResultEmbed(guildId, username, skillName, attributeUsed, attributeValue, skillRank, difficulty, isTagSkill, targetNumber, tagSkillRank, rolls, luckSpendMessage, apSpendMessage, 0);
 
-        var sentMessage = await message.Channel.SendMessageAsync(embed: embed);
-
-        // 7. Salva a rolagem no cache para !rerrolar
-        _lastRollCache[userId] = new UserLastRoll
+        var cache = new UserLastRoll
         {
-            OriginalMessage = sentMessage,
             GuildId = guildId,
             Rolls = rolls,
             TargetNumber = targetNumber,
@@ -111,7 +136,10 @@ public class GameService
             LuckSpendMessage = luckSpendMessage,
             ApSpendMessage = apSpendMessage
         };
+
+        return (embed, null, cache);
     }
+
 
     public async Task HandleDamageCommandAsync(SocketMessage message)
     {
@@ -192,9 +220,8 @@ public class GameService
             await message.Channel.SendMessageAsync("Formato inválido. Use: `!fabricar [nome do item ou mod]`");
             return;
         }
-        string itemName = string.Join(" ", parts.Skip(1));
+        string itemName = string.Join(" ", parts.Skip(1)).Trim().Replace("\"", "");
 
-        // 1. Buscar a Receita (seja de Item ou Mod)
         var recipe = await _dbService.GetRecipeAsync(itemName);
         if (recipe == null)
         {
@@ -202,7 +229,6 @@ public class GameService
             return;
         }
 
-        // 2. Buscar Dados do Personagem
         var characterStats = await _dbService.GetCharacterAsync(guildId, userId);
         if (characterStats == null)
         {
@@ -215,13 +241,10 @@ public class GameService
         int skillRank = skillInfo.Rank;
         bool isTagSkill = skillInfo.IsTag;
 
-        // 3. Calcular Dificuldade e Alvo
-        // Regra (pág. 210): Dificuldade = Complexidade - Rank da Perícia (mínimo 0)
         int difficulty = Math.Max(0, recipe.Complexidade - skillRank);
         int targetNumber = intRank + skillRank;
         int tagSkillRank = isTagSkill ? skillRank : 0;
 
-        // 4. Rolar os Dados (Sempre 2d20 para fabricação)
         List<int> rolls = new List<int> { _random.Next(1, 21), _random.Next(1, 21) };
         int successes = 0;
         int complications = 0;
@@ -236,7 +259,6 @@ public class GameService
         }
         bool isSuccess = successes >= difficulty;
 
-        // 5. Determinar o Resultado e a Mensagem de rodapé
         string resultMessage;
         string footerMessage;
         Color resultColor;
@@ -260,13 +282,12 @@ public class GameService
             {
                 footerMessage = "Falha! Os ingredientes foram perdidos.";
             }
-            else // Reparo (para Mods)
+            else
             {
                 footerMessage = "Falha! Os materiais não foram consumidos.";
             }
         }
 
-        // 6. Montar o Embed
         var embed = new EmbedBuilder()
             .WithTitle($"🛠️ Tentativa de Fabricação: {recipe.ItemName}")
             .WithColor(resultColor)
@@ -402,26 +423,17 @@ public class GameService
             return;
         }
 
+        // Aplicar ao autor da mensagem (Correção do Bug Anterior)
         var allCharacters = await _dbService.GetAllCharactersInGuildAsync(guildId);
+        var authorData = allCharacters.FirstOrDefault(c => c.UserId == message.Author.Id);
 
-        if (allCharacters.Count == 0)
+        if (authorData == default)
         {
-            await message.Channel.SendMessageAsync("Nenhum personagem registrado neste servidor para distribuir XP.");
+            await message.Channel.SendMessageAsync($"Você ({message.Author.Username}) não tem um personagem registrado para receber XP.");
             return;
         }
 
-        var updateTasks = new List<Task<(string name, ulong userId, int oldLevel, int newLevel, int newXP, int xpToNext)>>();
-
-        foreach (var charData in allCharacters)
-        {
-            // O código de distribuição está simplificado para rodar apenas para o usuário que invocou o comando 
-            // (a lógica GetXPAmountForNPC/AddXPToCharacter é complexa para múltiplos alvos sem mais dados)
-            if (charData.UserId != message.Author.Id) continue;
-
-            updateTasks.Add(UpdateCharacterXPAsync(guildId, charData.UserId, xpAmount, charData.Name, charData.Level));
-        }
-
-        var results = (await Task.WhenAll(updateTasks)).Where(r => r.newLevel > 0).ToList();
+        var (newXP, newLevel, xpToNextLevel) = await _dbService.AddXPToCharacter(guildId, authorData.UserId, xpAmount);
 
         var embed = new EmbedBuilder()
             .WithTitle($"⭐ XP Distribuído: +{xpAmount} XP por {xpSource}")
@@ -429,28 +441,16 @@ public class GameService
 
         StringBuilder summary = new StringBuilder();
 
-        foreach (var result in results)
+        if (newLevel > authorData.Level)
         {
-            if (result.newLevel > result.oldLevel)
-            {
-                summary.AppendLine($"**🎉 {result.name} subiu para o Nível {result.newLevel}!**");
-            }
-            summary.AppendLine($"`{result.name}`: {result.newXP} XP (Próximo nível em {result.xpToNext} XP)");
+            summary.AppendLine($"**🎉 {authorData.Name} subiu para o Nível {newLevel}!**");
         }
+        summary.AppendLine($"`{authorData.Name}`: {newXP} XP (Próximo nível em {xpToNextLevel} XP)");
 
         embed.WithDescription(summary.ToString());
         await message.Channel.SendMessageAsync(embed: embed.Build());
     }
 
-    // Método auxiliar para distribuir XP ao personagem.
-    private async Task<(string name, ulong userId, int oldLevel, int newLevel, int newXP, int xpToNext)> UpdateCharacterXPAsync(ulong guildId, ulong userId, int xpAmount, string name, int oldLevel)
-    {
-        var (newXP, newLevel, xpToNextLevel) = await _dbService.AddXPToCharacter(guildId, userId, xpAmount);
-
-        return (name, userId, oldLevel, newLevel, newXP, xpToNextLevel);
-    }
-
-    // Método auxiliar para obter a lista de materiais com base na receita.
     private string GetMaterialsForRecipe(Recipe recipe)
     {
         if (recipe.Materiais != null)
@@ -476,8 +476,8 @@ public class GameService
 
     #region Classes Auxiliares e Builders (GameService)
 
-    // CLASSES AUXILIARES (para persistir o estado do teste)
-    private class UserLastRoll
+
+    public class UserLastRoll
     {
         public IUserMessage OriginalMessage { get; set; } = null!;
         public ulong GuildId { get; set; }
@@ -494,8 +494,8 @@ public class GameService
         public string ApSpendMessage { get; set; } = "";
     }
 
-    // MÉTODO AUXILIAR PARA CRIAR O EMBED DO TESTE
-    private async Task<Embed> BuildTestResultEmbed(ulong guildId, string username, string skillName, string attributeUsed, int attributeValue,
+
+    public async Task<Embed> BuildTestResultEmbed(ulong guildId, string username, string skillName, string attributeUsed, int attributeValue,
         int skillRank, int difficulty, bool isTagSkill, int targetNumber, int tagSkillRank,
         List<int> rolls, string luckSpendMessage, string apSpendMessage, int rerollCount)
     {
@@ -513,7 +513,16 @@ public class GameService
         bool isSuccess = successes >= difficulty;
         int actionPointsGained = isSuccess ? (successes - difficulty) : 0;
         int currentTotalPA = 0;
-        if (actionPointsGained > 0 && rerollCount == 0) { currentTotalPA = await _dbService.AddActionPointsAsync(guildId, actionPointsGained); }
+
+        // CORREÇÃO: Apenas adiciona PA ao DB se for a rolagem inicial (rerollCount == 0)
+        if (actionPointsGained > 0 && rerollCount == 0)
+        {
+            currentTotalPA = await _dbService.AddActionPointsAsync(guildId, actionPointsGained);
+        }
+        else
+        {
+            currentTotalPA = await _dbService.GetActionPointsAsync(guildId);
+        }
 
         string title = rerollCount > 0 ? $"RERROLAGEM de {skillName.ToUpper()} (Alvo: {targetNumber})" : $"Teste de {skillName.ToUpper()} (Alvo: {targetNumber})";
         string embedDescription = $"**Personagem:** {username}\n" +
@@ -542,6 +551,15 @@ public class GameService
         if (complications > 0) { embedBuilder.AddField("Complicações", $"**{complications}** Complicação(ões)!"); }
 
         return embedBuilder.Build();
+    }
+
+    /// <summary>
+    /// Salva publicamente a última rolagem de um usuário no cache.
+    /// </summary>
+    public void CacheLastRoll(ulong userId, UserLastRoll rollData)
+    {
+        if (rollData == null) return;
+        _lastRollCache[userId] = rollData;
     }
 
     #endregion

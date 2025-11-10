@@ -1,6 +1,5 @@
 ﻿using Discord;
 using Discord.WebSocket;
-using PipBot3000;
 using System.Text;
 using System.Text.RegularExpressions;
 

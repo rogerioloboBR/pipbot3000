@@ -12,10 +12,17 @@ public class Program
 
     public async Task MainAsync()
     {
-        // 1. Carregar Configuração (config.json)
+        // --- MUDANÇA 1: Carregar o .env ---
+        // Carrega as variáveis do .env (como DISCORD_TOKEN) para o ambiente do processo
+        DotNetEnv.Env.Load();
+        // ----------------------------------
+
+        // 1. Carregar Configuração (config.json E .env)
         var configBuilder = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
-            .AddJsonFile("config.json", optional: false, reloadOnChange: true);
+            .AddJsonFile("config.json", optional: false, reloadOnChange: true)
+            .AddEnvironmentVariables(); // --- MUDANÇA 2: Adiciona as variáveis carregadas do .env ---
+
         _config = configBuilder.Build();
 
         // 2. Configurar Serviços (Injeção de Dependência)
@@ -27,18 +34,19 @@ public class Program
         // 3. Iniciar o Bot
         _client = serviceProvider.GetRequiredService<DiscordSocketClient>();
         _client.Log += Log;
-        _client.Ready += Client_Ready; // Escuta o evento Ready
+        _client.Ready += Client_Ready;
 
-        // Adiciona o novo roteador de interações
         _client.InteractionCreated += serviceProvider.GetRequiredService<CommandHandler>().HandleInteractionAsync;
 
-        await _client.LoginAsync(TokenType.Bot, _config["DiscordToken"]);
+        // --- MUDANÇA 3: Usar a variável correta do .env ---
+        await _client.LoginAsync(TokenType.Bot, _config["DISCORD_TOKEN"]); // 
+                                                                           // ----------------------------------------------------
+
         await _client.StartAsync();
 
-        // 4. Inicializar o CommandHandler (para comandos de mensagem, como !teste)
+        // 4. Inicializar o CommandHandler
         await serviceProvider.GetRequiredService<CommandHandler>().InitializeAsync();
 
-        // Manter o programa rodando
         await Task.Delay(-1);
     }
 
@@ -52,8 +60,6 @@ public class Program
                              GatewayIntents.GuildMessages |
                              GatewayIntents.MessageContent |
                              GatewayIntents.DirectMessages,
-
-            // Permite que o bot lide com Interações (Slash Commands) 
             AlwaysDownloadUsers = true
         };
         services.AddSingleton(new DiscordSocketClient(discordConfig));
@@ -67,7 +73,7 @@ public class Program
         services.AddSingleton<InfoService>();
         services.AddSingleton<CombatService>();
 
-        // Adiciona o Livro de Regras (para dados estáticos)
+        // Adiciona o Livro de Regras
         services.AddSingleton<Rulebook>();
 
         // Adiciona o Serviço de Banco de Dados
@@ -75,10 +81,12 @@ public class Program
         {
             var connectionStringBuilder = new MySqlConnectionStringBuilder
             {
-                Server = _config["DbHost"],
-                UserID = _config["DbUser"],
-                Password = _config["DbPass"],
-                Database = _config["DbName"]
+                Server = _config["DbHost"], //
+                UserID = _config["DbUser"], //
+                // --- MUDANÇA 4: Usar a variável correta do .env ---
+                Password = _config["DB_PASS"], // 
+                // ----------------------------------------------------
+                Database = _config["DbName"] //
             };
             return new DatabaseService(connectionStringBuilder.ConnectionString);
         });
@@ -89,11 +97,8 @@ public class Program
         Console.WriteLine($"Bot '{_client.CurrentUser.Username}' conectado e pronto!");
 
         // --- 5. REGISTRO DOS SLASH COMMANDS GLOBAIS ---
-
-        // Lista de comandos a serem registrados
         var globalCommands = new ApplicationCommandProperties[]
         {
-            // /teste <pericia> <dificuldade>
             new SlashCommandBuilder()
                 .WithName("teste")
                 .WithDescription("Realiza um Teste de Perícia (S.P.E.C.I.A.L. + Perícia) - pág. 13")
@@ -103,21 +108,18 @@ public class Program
                 .AddOption("dados", ApplicationCommandOptionType.Integer, "Comprar dados extras (1, 2 ou 3) usando PA do grupo")
                 .Build(),
 
-            // /npc <nome>
             new SlashCommandBuilder()
                 .WithName("npc")
                 .WithDescription("Consulta a ficha de um NPC ou Criatura - pág. 332")
                 .AddOption("nome", ApplicationCommandOptionType.String, "Nome do NPC/Criatura (Ex: mirelurk, invasor)", isRequired: true)
                 .Build(),
-                
-            // /regra <termo>
+
             new SlashCommandBuilder()
                 .WithName("regra")
                 .WithDescription("Consulta uma regra, mecânica ou status do Livro de Regras")
                 .AddOption("termo", ApplicationCommandOptionType.String, "Termo de busca (Ex: agonizando, cobertura, stimpak)", isRequired: true)
                 .Build(),
-                
-            // /area
+
             new SlashCommandBuilder()
                 .WithName("area")
                 .WithDescription("Rola a área de acerto (1d20) no combate - pág. 28")

@@ -225,7 +225,7 @@ public class CombatService
             }
             else
             {
-                sb.AppendLine($"&nbsp;&nbsp;&nbsp;&nbsp; {i + 1}. {name} (Iniciativa: {init})");
+                sb.AppendLine($"     {i + 1}. {name} (Iniciativa: {init})");
             }
         }
 
